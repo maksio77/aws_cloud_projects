@@ -1,0 +1,203 @@
+Resources:
+  S3ARRRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: S3ARRPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: arn:aws:s3:::arr-bucket-test/*
+
+  S3ARRInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref S3ARRRole
+
+  WebsiteSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80
+      VpcId: vpc-002aaccf3a7b46553
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  RedInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0191d47ba10441f0b
+      SecurityGroupIds:
+        - !Ref WebsiteSG
+
+      SubnetId: subnet-0d3d7e42b13f129e3
+      IamInstanceProfile: !Ref S3ARRInstanceProfile
+      Tags:
+        - Key: Name
+          Value: Red
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          # start httpd daemon
+          systemctl start httpd
+          # set http daemon to run at boot time
+          systemctl enable httpd
+          mkdir /var/www/html/red
+          # populate /red directory of server with web page
+          cd /var/www/html/red
+          aws s3 cp s3://arr-bucket-test/hw-red.css ./
+          aws s3 cp s3://arr-bucket-test/hw-red-py.css ./
+          aws s3 cp s3://arr-bucket-test/python.png ./
+          aws s3 cp s3://arr-bucket-test/apache.svg ./
+          aws s3 cp s3://arr-bucket-test/red-index.html ./index.html
+          # populate root of web server with web page (replaces apache default page)
+          cd /var/www/html
+          aws s3 cp s3://arr-bucket-test/hw-red.css ./
+          aws s3 cp s3://arr-bucket-test/hw-red-py.css ./
+          aws s3 cp s3://arr-bucket-test/python.png ./
+          aws s3 cp s3://arr-bucket-test/apache.svg ./
+          aws s3 cp s3://arr-bucket-test/red-root-index.html ./index.html
+          # optional restart of httpd daemon
+          systemctl restart httpd
+
+  BlueInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0191d47ba10441f0b
+      SecurityGroupIds:
+        - !Ref WebsiteSG
+
+      SubnetId: subnet-0c230673524651237
+      IamInstanceProfile: !Ref S3ARRInstanceProfile
+      Tags:
+        - Key: Name
+          Value: Blue
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          # start httpd daemon
+          systemctl start httpd
+          # set http daemon to run at boot time
+          systemctl enable httpd
+          mkdir /var/www/html/blue
+          # populate /blue directory of server with web page
+          cd /var/www/html/blue
+          aws s3 cp s3://arr-bucket-test/hw-blue.css ./
+          aws s3 cp s3://arr-bucket-test/hw-blue-py.css ./
+          aws s3 cp s3://arr-bucket-test/python.png ./
+          aws s3 cp s3://arr-bucket-test/apache.svg ./
+          aws s3 cp s3://arr-bucket-test/blue-index.html ./index.html
+          # populate root of web server with web page (replaces apache default page)
+          cd /var/www/html
+          aws s3 cp s3://arr-bucket-test/hw-blue.css ./
+          aws s3 cp s3://arr-bucket-test/hw-blue-py.css ./
+          aws s3 cp s3://arr-bucket-test/python.png ./
+          aws s3 cp s3://arr-bucket-test/apache.svg ./
+          aws s3 cp s3://arr-bucket-test/blue-root-index.html ./index.html
+          # optional restart of httpd daemon
+          systemctl restart httpd
+
+  RedEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref RedInstance
+
+  BlueEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref BlueInstance
+      
+  RedTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: red-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: vpc-002aaccf3a7b46553
+      TargetType: instance
+      HealthCheckPath: /red/index.html
+      HealthCheckProtocol: HTTP
+      Targets:
+        - Id: !Ref RedInstance
+  
+  BlueTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: blue-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: vpc-002aaccf3a7b46553
+      TargetType: instance
+      HealthCheckPath: /blue/index.html
+      HealthCheckProtocol: HTTP
+      Targets:
+        - Id: !Ref BlueInstance
+  
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: LabLoadBalancer
+      Type: application
+      Subnets:
+        - subnet-0d3d7e42b13f129e3
+        - subnet-0c230673524651237
+      SecurityGroups:
+        - !Ref WebsiteSG
+      
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BlueTG
+  
+  ALBListenerRuleRed:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /red*
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref RedTG
+
+  ALBListenerRuleBlue:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 2
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /blue*
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BlueTG
+          
